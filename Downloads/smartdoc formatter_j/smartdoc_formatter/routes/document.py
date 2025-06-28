@@ -88,19 +88,37 @@ def process_document():
             return jsonify({'error': 'File not found on server'}), 404
 
         # Process the document
-        result = processor.process_document(filepath)
+        # Pass instructions to the processor
+        result = processor.process_document(filepath, instructions=instructions)
         if result['status'] == 'error':
             raise Exception(result['message'])
 
-        # Update file status
+        # Update file status and filename to the processed version
         file_info['status'] = 'processed'
         file_info['processed_at'] = datetime.utcnow().isoformat()
+
+        # The processor saves the file with '_processed.docx'
+        # output_path will be like 'uploads/uuid_original_processed.docx'
+        # We need to store the new base filename in the session.
+        if result.get('output_path'):
+            new_filename = os.path.basename(result['output_path'])
+            # Log the change for debugging
+            current_app.logger.info(f"Original filename in session: {file_info['filename']}, New filename: {new_filename}")
+            file_info['filename'] = new_filename
+        else:
+            # This case should ideally not happen if processing is successful and output_path is always returned
+            current_app.logger.warning(f"No output_path returned from processor for file_id {file_id}")
+            # Fallback or specific handling might be needed if output_path is not guaranteed
+            # For now, we'll assume it's an issue if not present and rely on original filename if it happens
+
         session.modified = True
 
         return jsonify({
             'message': 'Document processed successfully',
             'file_id': file_id,
-            'status': 'processed'
+            'status': 'processed',
+            'agent_response': result.get('agent_response', 'Processing complete.'), # Pass through agent response
+            'output_path': result.get('output_path') # For frontend confirmation if needed
         }), 200
 
     except Exception as e:
