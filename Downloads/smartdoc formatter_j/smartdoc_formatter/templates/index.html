@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="SmartDoc Formatter - AI-powered document formatting tool">
+    <title>SmartDoc Formatter</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <!-- Load Font Awesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body>
+    <!-- Skip to main content link for accessibility -->
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+
+    <!-- Header -->
+    <header class="app-header" role="banner">
+        <div class="header-content">
+            <h1>SmartDoc Formatter</h1>
+            <div class="header-actions">
+                <button id="upload-btn" class="primary-btn" aria-label="Upload document">
+                    <i class="fas fa-upload" aria-hidden="true"></i> Upload
+                </button>
+                <button id="theme-toggle" class="icon-btn" aria-label="Toggle dark mode">
+                    <i class="fas fa-moon" aria-hidden="true"></i>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main content -->
+    <main id="main-content" class="app-container" role="main">
+        <!-- Left panel - Document preview -->
+        <section class="document-panel" role="region" aria-label="Document preview">
+            <!-- Upload area -->
+            <div id="upload-area" class="upload-area" 
+                 role="region" 
+                 aria-label="File upload area"
+                 tabindex="0">
+                <div class="upload-placeholder">
+                    <i class="fas fa-file-upload fa-3x" aria-hidden="true"></i>
+                    <p>Drag & drop your document here or click to browse</p>
+                    <p class="upload-info">Supported formats: .doc, .docx, .txt, .pdf</p>
+                    <input type="file" 
+                           id="file-input" 
+                           class="hidden" 
+                           accept=".doc,.docx,.txt,.pdf"
+                           aria-label="Choose file to upload">
+                </div>
+            </div>
+
+            <!-- Document preview -->
+            <div id="preview-container" class="preview-container hidden">
+                <!-- Preview toolbar -->
+                <div class="preview-toolbar" role="toolbar" aria-label="Preview controls">
+                    <div class="zoom-controls">
+                        <button class="icon-btn" id="zoom-out" aria-label="Zoom out">
+                            <i class="fas fa-search-minus" aria-hidden="true"></i>
+                        </button>
+                        <span id="zoom-level" aria-live="polite">100%</span>
+                        <button class="icon-btn" id="zoom-in" aria-label="Zoom in">
+                            <i class="fas fa-search-plus" aria-hidden="true"></i>
+                        </button>
+                    </div>
+                    <div class="view-controls">
+                        <button class="icon-btn" id="toggle-outline" aria-label="Toggle outline">
+                            <i class="fas fa-list" aria-hidden="true"></i>
+                        </button>
+                        <button class="icon-btn" id="download-doc" aria-label="Download document">
+                            <i class="fas fa-download" aria-hidden="true"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Document content -->
+                <div id="preview-content" class="preview-content" role="document">
+                    <!-- Content will be loaded here -->
+                </div>
+            </div>
+        </section>
+
+        <!-- Right panel - Chat interface -->
+        <section class="chat-panel" role="region" aria-label="Chat interface">
+            <!-- Chat header -->
+            <div class="chat-header">
+                <h2>AI Assistant</h2>
+                <button id="clear-chat" class="text-btn" aria-label="Clear chat">
+                    <i class="fas fa-trash-alt" aria-hidden="true"></i> Clear
+                </button>
+            </div>
+
+            <!-- Chat messages -->
+            <div id="chat-messages" class="chat-messages" role="log" aria-live="polite">
+                <!-- Welcome message -->
+                <div class="message system">
+                    <p>Welcome to SmartDoc Formatter! Upload a document to get started.</p>
+                </div>
+            </div>
+
+            <!-- Chat input -->
+            <div class="chat-input-container">
+                <div id="typing-indicator" class="typing-indicator hidden">
+                    <span></span><span></span><span></span>
+                </div>
+                <form id="chat-form" class="chat-form">
+                    <div class="input-wrapper">
+                        <textarea id="chat-input" 
+                                class="chat-input" 
+                                placeholder="Type your formatting instructions..."
+                                rows="1"
+                                aria-label="Chat input"
+                                required></textarea>
+                        <button type="submit" class="send-btn" aria-label="Send message">
+                            <i class="fas fa-paper-plane" aria-hidden="true"></i>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </section>
+    </main>
+
+    <!-- Modals -->
+    <!-- Upload progress modal -->
+    <div id="upload-modal" class="modal" role="dialog" aria-labelledby="upload-modal-title" aria-hidden="true">
+        <div class="modal-content">
+            <h3 id="upload-modal-title">Uploading Document</h3>
+            <div class="progress-container">
+                <div id="upload-progress" class="progress-bar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+                    <div class="progress-fill"></div>
+                </div>
+                <span class="progress-text" aria-live="polite">0%</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Error modal -->
+    <div id="error-modal" class="modal" role="alertdialog" aria-labelledby="error-modal-title" aria-hidden="true">
+        <div class="modal-content">
+            <h3 id="error-modal-title">Error</h3>
+            <p id="error-message"></p>
+            <button class="primary-btn" onclick="closeModal('error-modal')">Close</button>
+        </div>
+    </div>
+
+    <!-- Download modal -->
+    <div id="download-modal" class="modal" role="dialog" aria-labelledby="download-modal-title" aria-hidden="true">
+        <div class="modal-content">
+            <h3 id="download-modal-title">Download Document</h3>
+            <p>Your document has been processed successfully!</p>
+            <div class="modal-actions">
+                <button id="download-btn" class="primary-btn">
+                    <i class="fas fa-download" aria-hidden="true"></i> Download
+                </button>
+                <button class="secondary-btn" onclick="closeModal('download-modal')">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading overlay -->
+    <div id="loading-overlay" class="loading-overlay hidden" role="alert" aria-busy="true">
+        <div class="spinner"></div>
+        <p id="loading-text">Processing document...</p>
+    </div>
+
+    <!-- Scripts -->
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html> 

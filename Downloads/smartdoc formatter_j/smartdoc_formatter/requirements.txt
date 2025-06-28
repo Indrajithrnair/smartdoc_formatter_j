@@ -1,0 +1,19 @@
+# === Flask & Web ===
+Flask==2.3.3
+Flask-CORS==4.0.0
+Werkzeug==3.0.1
+
+# === Document Processing ===
+python-docx==0.8.11
+mammoth==1.6.0
+bleach==6.1.0
+python-multipart==0.0.6
+python-dotenv==1.0.1
+
+# === LangChain & LLMs (Groq + Compatible Versions) ===
+langchain>=0.1.17
+langchain-community>=0.0.36
+langchain-core>=0.1.52
+langsmith>=0.1.17
+langchain-groq==0.1.0
+groq==0.4.1
