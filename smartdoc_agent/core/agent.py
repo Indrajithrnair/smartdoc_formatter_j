@@ -1,9 +1,6 @@
 from langchain_groq import ChatGroq
-# Note: AgentExecutor is not used by the new custom loop directly but create_react_agent might need it or its components.
-# For now, keeping it to see if create_react_agent is self-sufficient.
-# from langchain.agents import AgentExecutor
-from langchain.agents import create_react_agent # Corrected import path if different from AgentExecutor's module
-from langchain_core.prompts import ChatPromptTemplate # MessagesPlaceholder not used in current prompt
+from langchain.agents import create_react_agent
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage, AIMessage
 
 from smartdoc_agent.core.tools import (
@@ -14,25 +11,33 @@ from smartdoc_agent.core.tools import (
 )
 from smartdoc_agent.config import get_groq_api_key
 
-# Required for new run loop
 import json
 import ast
-import traceback # Import traceback
-import time # For timing LLM calls
+import traceback
+import time
 from langchain_core.agents import AgentAction, AgentFinish
-
+from typing import Any # Import Any
 
 class DocumentFormattingAgent:
-    def __init__(self, model_name="llama3-70b-8192", temperature=0):
-        self.api_key = get_groq_api_key()
-        if not self.api_key or self.api_key in ["YOUR_GROQ_API_KEY_HERE"] or "DUMMY" in self.api_key.upper() :
-            print(f"⚠️ DocumentFormattingAgent __init__: API key is dummy, placeholder, or missing ('{self.api_key}'). Agent's LLM may fail.")
+    def __init__(self, model_name="llama3-70b-8192", temperature=0, progress_callback=None):
+        self.progress_callback = progress_callback
+        self._emit_progress({"type": "lifecycle", "event": "agent_init_start"})
 
-        self.llm = ChatGroq(
-            groq_api_key=self.api_key,
-            model_name=model_name,
-            temperature=temperature
-        )
+        self.api_key = get_groq_api_key()
+
+        if not self.api_key or self.api_key in ["YOUR_GROQ_API_KEY_HERE"] or "DUMMY" in self.api_key.upper() :
+            self._emit_progress({"type": "warning", "message": f"API key is dummy, placeholder, or missing ('{self.api_key}'). Agent's LLM may fail, or tools requiring LLM will fail."})
+
+        try:
+            self.llm = ChatGroq(
+                groq_api_key=self.api_key,
+                model_name=model_name,
+                temperature=temperature
+            )
+            self._emit_progress({"type": "info", "message": f"Core LLM ({model_name}) for agent reasoning initialized."})
+        except Exception as e:
+            self._emit_progress({"type": "error", "message": f"Fatal: Failed to initialize core LLM for agent: {e}"})
+            raise ValueError(f"Failed to initialize core LLM: {e}")
 
         self.tools = [
             analyze_document_structure,
@@ -118,97 +123,111 @@ class DocumentFormattingAgent:
         self.PLACEHOLDER_MODIFIED_ANALYSIS = "$FULL_MODIFIED_ANALYSIS"
         self.PLACEHOLDER_FORMATTING_PLAN = "$CURRENT_FORMATTING_PLAN"
 
+    def _emit_progress(self, data: dict):
+        """Helper to call the progress callback if it exists."""
+        # print(f"AGENT PROGRESS: {data}") # Optional: for local debugging
+        if self.progress_callback:
+            try:
+                self.progress_callback(data)
+            except Exception as e:
+                print(f"Error in progress_callback: {e}")
+
     def _substitute_placeholders(self, action_input: dict) -> dict:
         processed_input = {}
         for key, value in action_input.items():
             if value == self.PLACEHOLDER_ORIGINAL_ANALYSIS:
                 if self.full_original_analysis_json:
                     processed_input[key] = self.full_original_analysis_json
-                    print(f"Substituted {self.PLACEHOLDER_ORIGINAL_ANALYSIS} for key '{key}'")
+                    self._emit_progress({"type": "debug", "message": f"Substituted {self.PLACEHOLDER_ORIGINAL_ANALYSIS} for key '{key}'"})
                 else:
                     raise ValueError(f"Agent tried to use placeholder {self.PLACEHOLDER_ORIGINAL_ANALYSIS} but no original analysis is stored.")
             elif value == self.PLACEHOLDER_MODIFIED_ANALYSIS:
                 if self.full_modified_analysis_json:
                     processed_input[key] = self.full_modified_analysis_json
-                    print(f"Substituted {self.PLACEHOLDER_MODIFIED_ANALYSIS} for key '{key}'")
+                    self._emit_progress({"type": "debug", "message": f"Substituted {self.PLACEHOLDER_MODIFIED_ANALYSIS} for key '{key}'"})
                 else:
                     raise ValueError(f"Agent tried to use placeholder {self.PLACEHOLDER_MODIFIED_ANALYSIS} but no modified analysis is stored.")
             elif value == self.PLACEHOLDER_FORMATTING_PLAN:
                 if self.current_formatting_plan_json:
                     processed_input[key] = self.current_formatting_plan_json
-                    print(f"Substituted {self.PLACEHOLDER_FORMATTING_PLAN} for key '{key}'")
+                    self._emit_progress({"type": "debug", "message": f"Substituted {self.PLACEHOLDER_FORMATTING_PLAN} for key '{key}'"})
                 else:
                     raise ValueError(f"Agent tried to use placeholder {self.PLACEHOLDER_FORMATTING_PLAN} but no plan is stored.")
             else:
                 processed_input[key] = value
         return processed_input
 
-    def _execute_tool(self, tool_name: str, tool_input_from_llm: str | dict) -> str:
-        # tool_input_from_llm is what the LLM generated for "Action Input"
-        # This will be the actual value passed as the 'tool_input' argument to the tool function,
-        # after parsing and placeholder substitution.
-        payload_value_for_tool = None
+    def _execute_tool(self, tool_name: str, tool_input_from_llm: Any) -> str:
+        self._emit_progress({"type": "tool_start", "name": tool_name, "input_preview": str(tool_input_from_llm)[:100] + "..."})
+        payload_value_for_tool: Any = None
 
         if isinstance(tool_input_from_llm, str):
             parsed_llm_input_dict = None
-            # LLM should provide a VALID JSON string for dictionary inputs.
             try:
                 parsed_llm_input_dict = json.loads(tool_input_from_llm)
-                print(f"  _execute_tool: Parsed LLM string input as JSON to dict.")
+                self._emit_progress({"type": "debug", "message": f"_execute_tool: Parsed LLM string input as JSON to dict."})
                 payload_value_for_tool = self._substitute_placeholders(parsed_llm_input_dict)
             except json.JSONDecodeError:
-                # If it's not a JSON dict string, treat as a simple string argument (e.g. for analyze_document_structure)
-                # This might also catch cases where LLM provides a non-dict JSON literal (e.g. "just a string literal")
-                payload_value_for_tool = tool_input_from_llm.strip('"').strip("'") # Strip potential quotes if it's a path
-                print(f"  _execute_tool: LLM string input treated as simple string (JSON parse failed, after strip): {str(payload_value_for_tool)[:100]}...")
+                payload_value_for_tool = tool_input_from_llm.strip('"').strip("'")
+                self._emit_progress({"type": "debug", "message": f"_execute_tool: LLM string input treated as simple string (JSON parse failed, after strip): {str(payload_value_for_tool)[:100]}..."})
 
         elif isinstance(tool_input_from_llm, dict):
-            # LangChain's ReAct parser might have already converted LLM's JSON string output into a dict.
             payload_value_for_tool = self._substitute_placeholders(tool_input_from_llm)
-            print(f"  _execute_tool: LLM dict input, after subs: {str(payload_value_for_tool)[:100]}...")
+            self._emit_progress({"type": "debug", "message": f"_execute_tool: LLM dict input. After subs: {str(payload_value_for_tool)[:100]}..."})
         else:
             error_msg = f"LLM provided invalid type for Action Input: {type(tool_input_from_llm)}. Value: {str(tool_input_from_llm)[:200]}"
-            print(f"  _execute_tool: {error_msg}")
+            self._emit_progress({"type": "error", "message": f"_execute_tool: {error_msg}"})
             return json.dumps({"error": error_msg})
 
-        # All our tools are defined as def tool_name(tool_input: str | dict).
-        # LangChain's @tool will wrap this so invoke expects {"tool_input": <payload_value_for_tool>}
-        args_for_langchain_invoke = {"tool_input": payload_value_for_tool} # Correct variable name
+        args_for_langchain_invoke = {"tool_input": payload_value_for_tool}
 
         selected_tool = next((t for t in self.tools if t.name == tool_name), None)
         if not selected_tool:
-            return f"Error: Tool '{tool_name}' not found. Available tools: {[t.name for t in self.tools]}"
+            error_msg = f"Error: Tool '{tool_name}' not found. Available tools: {[t.name for t in self.tools]}"
+            self._emit_progress({"type": "error", "message": error_msg})
+            return error_msg
 
+        observation = ""
         try:
-            print(f"  Invoking tool '{selected_tool.name}' with args for invoke: {str(args_for_langchain_invoke)[:200]}...") # Use correct variable
-            observation = selected_tool.invoke(args_for_langchain_invoke) # Use correct variable
+            self._emit_progress({"type": "debug", "message": f"Invoking tool '{selected_tool.name}' with args for invoke: {str(args_for_langchain_invoke)[:200]}..."})
+            observation = selected_tool.invoke(args_for_langchain_invoke)
+            self._emit_progress({"type": "tool_end", "name": tool_name, "observation_preview": str(observation)[:100] + "..."})
         except Exception as e:
-            print(f"  Error executing tool {tool_name}: {e}")
-            traceback.print_exc()
-            return f"Error executing tool {tool_name}: {str(e)}"
+            error_msg_tool_exec = f"Error executing tool {tool_name}: {str(e)}"
+            self._emit_progress({"type": "error", "message": error_msg_tool_exec, "details": traceback.format_exc()})
+            traceback.print_exc() # Also print to server log for immediate visibility
+            return error_msg_tool_exec # Return error message as observation
 
         try:
-            analysis_output_data = json.loads(observation) if isinstance(observation, str) else observation
+            # Attempt to parse observation to see if it's JSON (many tools return JSON strings)
+            # This is for storing specific data structures, not for general logging.
+            parsed_observation_for_storage = json.loads(observation) if isinstance(observation, str) else observation
 
-            if tool_name == "analyze_document_structure" and isinstance(analysis_output_data, dict) and "document_path" in analysis_output_data:
-                analyzed_path = analysis_output_data["document_path"]
-                if analyzed_path == self.current_doc_path: # Check if it's the original document
+            if tool_name == "analyze_document_structure" and isinstance(parsed_observation_for_storage, dict) and "document_path" in parsed_observation_for_storage:
+                analyzed_path = parsed_observation_for_storage["document_path"]
+                if analyzed_path == self.current_doc_path:
                     self.full_original_analysis_json = observation
-                    print(f"  Stored full_original_analysis_json (length {len(observation) if observation else 0})")
-                elif analyzed_path == self.current_output_doc_path: # Check if it's the modified document
+                    self._emit_progress({"type": "data_store", "variable": "full_original_analysis_json", "length": len(observation) if observation else 0})
+                elif analyzed_path == self.current_output_doc_path:
                     self.full_modified_analysis_json = observation
-                    print(f"  Stored full_modified_analysis_json (length {len(observation) if observation else 0})")
+                    self._emit_progress({"type": "data_store", "variable": "full_modified_analysis_json", "length": len(observation) if observation else 0})
             elif tool_name == "create_formatting_plan":
-                self.current_formatting_plan_json = observation
-                print(f"  Stored current_formatting_plan_json (length {len(observation) if observation else 0})")
+                # Ensure what's stored is the JSON string if the tool returned a string
+                if isinstance(observation, str):
+                    self.current_formatting_plan_json = observation
+                    self._emit_progress({"type": "data_store", "variable": "current_formatting_plan_json", "length": len(observation) if observation else 0})
+                elif isinstance(parsed_observation_for_storage, (dict, list)): # If tool already parsed it (should not based on current tools.py)
+                    self.current_formatting_plan_json = json.dumps(parsed_observation_for_storage) # Store as string
+                    self._emit_progress({"type": "data_store", "variable": "current_formatting_plan_json", "length": len(self.current_formatting_plan_json)})
         except json.JSONDecodeError:
-            print(f"  Warning: Observation from {tool_name} was not valid JSON, not storing: {observation[:100]}")
-        except Exception as e:
-            print(f"  Error processing/storing observation from {tool_name}: {e}")
+            self._emit_progress({"type":"debug", "message":f"Observation from {tool_name} was not valid JSON, not performing special storage: {observation[:100]}"})
+        except Exception as e: # Catch other errors during storage logic
+            self._emit_progress({"type":"error", "message":f"Error processing/storing observation from {tool_name}: {e}"})
 
         return str(observation)
 
     def run(self, user_query: str, document_path: str, output_document_path: str = None):
+        self._emit_progress({"type": "lifecycle", "event": "agent_run_start", "user_query": user_query, "doc_path": document_path})
         self.current_doc_path = document_path
         if not output_document_path:
             self.current_output_doc_path = document_path.replace(".docx", "_formatted.docx")
@@ -226,13 +245,16 @@ class DocumentFormattingAgent:
             "Follow the general workflow: analyze original, create plan, apply plan, analyze modified, validate. Use placeholders like $FULL_ORIGINAL_ANALYSIS where instructed."
         )
 
-        self.chat_history.append(HumanMessage(content=agent_initial_input))
+        if not self.chat_history: # Initialize with system message if empty
+            self.chat_history.append(HumanMessage(content=agent_initial_input))
+        else: # Append if continuing a conversation (not fully supported by this run structure yet)
+            self.chat_history.append(HumanMessage(content=agent_initial_input))
 
         intermediate_steps = []
-        max_iterations = 12 # INCREASED to allow for full validation flow
+        max_iterations = 12
 
         for i in range(max_iterations):
-            print(f"\n--- Iteration {i+1}/{max_iterations} ---")
+            self._emit_progress({"type": "iteration_start", "iteration": i + 1, "max_iterations": max_iterations})
             try:
                 current_input_for_llm = agent_initial_input if i == 0 else "What is the next logical step based on the previous actions and observations?"
 
@@ -242,60 +264,71 @@ class DocumentFormattingAgent:
                     "chat_history": self.chat_history
                 }
 
-                print(f"Iteration {i+1}: Calling agent.invoke (LLM for next step planning) with input: \"{current_input_for_llm[:100]}...\"")
+                self._emit_progress({"type": "llm_call_start", "purpose": "action_planning", "input_preview": current_input_for_llm[:100]+"..."})
                 llm_call_start_time = time.time()
                 llm_output = self.agent.invoke(current_agent_input_dict)
                 llm_call_duration = time.time() - llm_call_start_time
-                print(f"Iteration {i+1}: agent.invoke returned after {llm_call_duration:.2f}s. Type: {type(llm_output)}")
+                self._emit_progress({"type": "llm_call_end", "duration_seconds": round(llm_call_duration,2) , "output_type": str(type(llm_output))})
 
                 if isinstance(llm_output, AgentFinish):
                     final_answer = llm_output.return_values.get("output", "No final answer from AgentFinish.")
-                    print(f"AgentFinish: {final_answer}")
+                    self._emit_progress({"type": "agent_finish", "final_answer": final_answer})
                     self.chat_history.append(AIMessage(content=final_answer))
                     return final_answer
 
                 if not isinstance(llm_output, AgentAction):
                     final_answer = str(llm_output)
-                    if hasattr(llm_output, 'log'): print(f"LLM Log: {llm_output.log}")
+                    if hasattr(llm_output, 'log'):
+                        self._emit_progress({"type": "debug", "message": f"LLM Log: {llm_output.log}"})
+
                     if "Final Answer:" in final_answer :
                          final_answer = final_answer.split("Final Answer:")[-1].strip()
+                         self._emit_progress({"type": "agent_finish", "final_answer": final_answer, "reason": "LLM direct final answer"})
+                         self.chat_history.append(AIMessage(content=final_answer))
+                         return final_answer
                     else:
-                        print(f"Error: LLM output was not AgentAction or AgentFinish. Type: {type(llm_output)}, Output: {str(llm_output)[:500]}")
+                        error_msg = f"LLM output was not AgentAction or AgentFinish. Type: {type(llm_output)}, Output: {str(llm_output)[:500]}"
+                        self._emit_progress({"type": "error", "message": error_msg})
                         self.chat_history.append(AIMessage(content=f"Agent produced unexpected output type: {type(llm_output)}"))
                         return f"Agent error: Unexpected output type from LLM. Last output: {str(llm_output)[:500]}"
 
                 agent_action = llm_output
                 tool_name = agent_action.tool
-                tool_input_from_llm = agent_action.tool_input
+                tool_input_from_llm = agent_action.tool_input # This is what LLM provides
 
-                print(f"LLM Action: {tool_name}, LLM Action Input: {str(tool_input_from_llm)[:200]}...")
+                self._emit_progress({"type": "debug", "message": f"LLM Action: {tool_name}, LLM Action Input (raw): {str(tool_input_from_llm)[:200]}..."})
 
                 observation_str = self._execute_tool(tool_name, tool_input_from_llm)
 
-                print(f"Observation from {tool_name} (full length {len(observation_str)} chars, first 100 shown): {observation_str[:100]}...")
-
+                # Truncate very long observations for the scratchpad to manage context window
                 observation_str_for_scratchpad = observation_str
                 MAX_OBS_LEN_SCRATCHPAD = 1000
                 if len(observation_str_for_scratchpad) > MAX_OBS_LEN_SCRATCHPAD:
-                    observation_str_for_scratchpad = observation_str_for_scratchpad[:MAX_OBS_LEN_SCRATCHPAD] + f"... (truncated, original length {len(observation_str)})"
+                    truncated_len = len(observation_str_for_scratchpad)
+                    observation_str_for_scratchpad = observation_str_for_scratchpad[:MAX_OBS_LEN_SCRATCHPAD] + f"... (truncated, original length {truncated_len})"
 
                 intermediate_steps.append((agent_action, observation_str_for_scratchpad))
 
             except Exception as e:
                 error_message = f"Error in agent loop iteration {i+1}: {e}"
-                print(error_message)
+                self._emit_progress({"type": "error", "message": error_msg, "details": traceback.format_exc()})
                 traceback.print_exc()
                 self.chat_history.append(AIMessage(content=f"Encountered an error: {error_message}"))
                 return f"An error occurred in the agent loop: {e}"
 
-        self.chat_history.append(AIMessage(content="Agent reached maximum iterations."))
-        return "Agent reached maximum iterations."
+        final_message = "Agent reached maximum iterations."
+        self._emit_progress({"type": "lifecycle", "event": "agent_run_max_iterations", "message": final_message})
+        self.chat_history.append(AIMessage(content=final_message))
+        return final_message
 
 
 if __name__ == '__main__':
-    from docx import Document as PythonDocXDocument # Keep this import local to __main__
+    from docx import Document as PythonDocXDocument
     sample_doc_path = "sample_doc_for_agent.docx"
     sample_output_path = "sample_doc_for_agent_formatted.docx"
+
+    def cli_progress_callback(data: dict):
+        print(f"CLI_PROGRESS: {json.dumps(data)}")
 
     doc = PythonDocXDocument()
     doc.add_heading('Agent Test Document', level=0)
@@ -306,7 +339,7 @@ if __name__ == '__main__':
     print(f"Created '{sample_doc_path}' for agent testing.")
 
     try:
-        formatter_agent = DocumentFormattingAgent()
+        formatter_agent = DocumentFormattingAgent(progress_callback=cli_progress_callback)
 
         user_request = "Please make this document look more professional and fix inconsistencies."
         print(f"\n--- Running agent with query: '{user_request}' on '{sample_doc_path}' ---")
@@ -322,14 +355,13 @@ if __name__ == '__main__':
 
     except ValueError as ve:
         print(f"Setup Error: {ve}")
-        # Ensure this matches the error from get_groq_api_key if key is truly missing after all checks
         if "GROQ_API_KEY is not set" in str(ve):
              print("Please ensure your GROQ_API_KEY is set in .env at the project root.")
     except Exception as ex:
         print(f"An unexpected error occurred: {ex}")
         traceback.print_exc()
     finally:
-        import os # Keep this local if only used here
+        import os
         if os.path.exists(sample_doc_path):
             os.remove(sample_doc_path)
         if os.path.exists(sample_output_path):
