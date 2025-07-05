@@ -13,28 +13,32 @@ def analyze_document_structure(tool_input: str | dict) -> str:
     Returns a JSON string containing detailed analysis of document elements,
     including paragraphs, headings, styles, fonts, and alignments.
     """
-    doc_path_str = None
-    # The 'tool_input' is now the direct payload prepared by DocumentFormattingAgent._execute_tool
-    # It's either a simple string (e.g. path) or a dictionary of arguments.
 
-
+    # --- Robust doc_path extraction ---
     doc_path_str = None
-    # If input is a stringified dict, parse it
-    if isinstance(tool_input, str):
+    if isinstance(tool_input, dict):
+        doc_path_str = tool_input.get("doc_path")
+    elif isinstance(tool_input, str):
+        # Remove any trailing instructions or extra text (e.g., "Please respond with the Observation.")
+        # Try to parse as dict first
         try:
-            # Try to parse as dict
-            parsed = ast.literal_eval(tool_input)
+            parsed = ast.literal_eval(tool_input.strip())
             if isinstance(parsed, dict) and "doc_path" in parsed:
                 doc_path_str = parsed["doc_path"]
             else:
-                doc_path_str = tool_input
+                # If not a dict, treat as path string, but strip at first newline or extra text
+                doc_path_str = tool_input.strip().split("\n")[0]
         except Exception:
-            doc_path_str = tool_input
-    elif isinstance(tool_input, dict):
-        doc_path_str = tool_input.get("doc_path")
+            # If parsing fails, treat as path string, but strip at first newline or extra text
+            doc_path_str = tool_input.strip().split("\n")[0]
 
-    if not doc_path_str:
-        error_msg = f"analyze_document_structure: 'doc_path' not found in tool_input: {tool_input}"
+    # If doc_path_str is still a dict (bad input), try to extract again
+    if isinstance(doc_path_str, dict):
+        doc_path_str = doc_path_str.get("doc_path")
+
+    # Final fallback: if doc_path_str is still not a string, error
+    if not isinstance(doc_path_str, str) or not doc_path_str:
+        error_msg = f"analyze_document_structure: 'doc_path' not found or invalid in tool_input: {tool_input}"
         print(f"Tool Error: {error_msg}")
         return json.dumps({"error": error_msg})
 
