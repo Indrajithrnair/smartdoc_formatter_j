@@ -186,10 +186,13 @@ def set_paragraph_alignment_properties(paragraph, alignment: str = None): # alig
     """Applies alignment to a paragraph."""
     if alignment:
         try:
-            align_enum = WD_ALIGN_PARAGRAPH[alignment.upper()]
-            paragraph.alignment = align_enum
-        except KeyError:
-            print(f"Warning: Invalid alignment value '{alignment}'. Skipping.")
+            align_enum = getattr(WD_ALIGN_PARAGRAPH, alignment.upper(), None)
+            if align_enum is not None:
+                paragraph.alignment = align_enum
+            else:
+                print(f"Warning: Invalid alignment value '{alignment}'. Skipping.")
+        except Exception as e:
+            print(f"Warning: Exception setting alignment '{alignment}': {e}")
 
 
 # More specific action handlers to be called by the tool:

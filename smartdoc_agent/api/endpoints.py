@@ -1,3 +1,4 @@
+
 from fastapi import APIRouter, File, UploadFile, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 import shutil
@@ -7,6 +8,7 @@ from typing import Dict, List, Any
 import datetime
 import asyncio
 import json # For process_document_agent_task's result parsing
+import traceback
 
 from .models import FileUploadResponse, ProcessingRequest, JobStatus, WebSocketMessage, FinalProcessingResult, FinalProcessingResultData
 from smartdoc_agent.core.agent import DocumentFormattingAgent
@@ -130,9 +132,9 @@ def process_document_agent_task(job_id: str, user_goal: str):
         jobs_db[job_id].update({
             "status": "completed",
             "current_step_details": final_status_message,
-            "final_result_data": result_data_obj.model_dump()
+            "final_result_data": result_data_obj.dict()
         })
-        final_ws_msg = WebSocketMessage(job_id=job_id, type="job_completed", message=final_status_message, data=result_data_obj.model_dump(), timestamp="")
+        final_ws_msg = WebSocketMessage(job_id=job_id, type="job_completed", message=final_status_message, data=result_data_obj.dict(), timestamp="")
         manager.broadcast_to_job_from_thread(job_id, final_ws_msg)
 
     except Exception as e:
@@ -146,7 +148,7 @@ def process_document_agent_task(job_id: str, user_goal: str):
                 original_doc_path=jobs_db[job_id].get("original_file_path", "N/A"), # Try to get original path
                 agent_final_answer=f"Error: {str(e)}",
                 # No other summaries available on error typically
-            ).model_dump(exclude_none=True), # Store as dict
+            ).dict(exclude_none=True), # Store as dict
             "error_details_for_log": detailed_error # For server logs, not necessarily for user
         })
         final_ws_err_msg = WebSocketMessage(job_id=job_id, type="job_error", message=error_message_for_user, details=detailed_error, timestamp="")

@@ -17,20 +17,26 @@ def analyze_document_structure(tool_input: str | dict) -> str:
     # The 'tool_input' is now the direct payload prepared by DocumentFormattingAgent._execute_tool
     # It's either a simple string (e.g. path) or a dictionary of arguments.
 
+
     doc_path_str = None
+    # If input is a stringified dict, parse it
     if isinstance(tool_input, str):
-        doc_path_str = tool_input # Assume it's the path
+        try:
+            # Try to parse as dict
+            parsed = ast.literal_eval(tool_input)
+            if isinstance(parsed, dict) and "doc_path" in parsed:
+                doc_path_str = parsed["doc_path"]
+            else:
+                doc_path_str = tool_input
+        except Exception:
+            doc_path_str = tool_input
     elif isinstance(tool_input, dict):
         doc_path_str = tool_input.get("doc_path")
 
-    if not doc_path_str: # Still check if we got a path
+    if not doc_path_str:
         error_msg = f"analyze_document_structure: 'doc_path' not found in tool_input: {tool_input}"
         print(f"Tool Error: {error_msg}")
         return json.dumps({"error": error_msg})
-
-    # Ensure quotes are stripped if it was a direct string path that might have had them from LLM
-    # This was already done by _execute_tool if it was a simple string.
-    # If tool_input was a dict, doc_path_str = tool_input.get("doc_path") would be clean.
 
     print(f"Tool: analyze_document_structure called. Effective doc_path='{doc_path_str}' (Original agent tool_input was: {tool_input})")
 
